@@ -1,24 +1,27 @@
-package com.aparajita.capacitor.biometricauth;
-
 import android.annotation.SuppressLint;
-import android.app.Activity;
 import android.app.KeyguardManager;
 import android.content.Context;
-import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import androidx.activity.result.ActivityResult;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Base64;
 import androidx.annotation.NonNull;
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
+import androidx.core.content.ContextCompat;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
-import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.HashMap;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
 
 @SuppressLint("RestrictedApi")
 @CapacitorPlugin(name = "BiometricAuthNative")
@@ -37,9 +40,7 @@ public class BiometricAuthNative extends Plugin {
     "androidConfirmationRequired";
   public static final String MAX_ATTEMPTS = "androidMaxAttempts";
   public static final int DEFAULT_MAX_ATTEMPTS = 3;
-  // Error code when biometry is not recognized
   public static final String BIOMETRIC_FAILURE = "authenticationFailed";
-  // Maps biometry error numbers to string error codes
   private static final HashMap<Integer, String> biometryErrorCodeMap;
   private static final HashMap<BiometryType, String> biometryNameMap;
   private static final String INVALID_CONTEXT_ERROR = "invalidContext";
@@ -93,25 +94,21 @@ public class BiometricAuthNative extends Plugin {
   }
 
   private ArrayList<BiometryType> biometryTypes;
+  private KeyStore keyStore;
+  private static final String KEY_NAME = "biometric_key";
 
   private int getAuthenticatorFromCall(PluginCall call) {
     int authenticator = BiometricManager.Authenticators.BIOMETRIC_WEAK;
-
     Integer value = call.getInt(
       "androidBiometryStrength",
       BiometryStrength.WEAK.ordinal()
     );
-
     if (value != null && value == BiometryStrength.STRONG.ordinal()) {
       authenticator = BiometricManager.Authenticators.BIOMETRIC_STRONG;
     }
-
     return authenticator;
   }
 
-  /**
-   * Check the device's availability and type of biometric authentication.
-   */
   @PluginMethod
   public void checkBiometry(PluginCall call) {
     call.resolve(checkBiometry());
@@ -120,53 +117,37 @@ public class BiometricAuthNative extends Plugin {
   private JSObject checkBiometry() {
     JSObject result = new JSObject();
     BiometricManager manager = BiometricManager.from(getContext());
-
-    // First check for weak biometry or better.
     int weakBiometryResult = manager.canAuthenticate(
       BiometricManager.Authenticators.BIOMETRIC_WEAK
     );
-
     setReasonAndCode(weakBiometryResult, false, result);
-
     result.put(
       "isAvailable",
       weakBiometryResult == BiometricManager.BIOMETRIC_SUCCESS
     );
-
-    // Now check for strong biometry.
     int strongBiometryResult = manager.canAuthenticate(
       BiometricManager.Authenticators.BIOMETRIC_STRONG
     );
-
     setReasonAndCode(strongBiometryResult, true, result);
-
     result.put(
       "strongBiometryIsAvailable",
       strongBiometryResult == BiometricManager.BIOMETRIC_SUCCESS
     );
-
     biometryTypes = getDeviceBiometryTypes();
     result.put("biometryType", biometryTypes.get(0).getType());
-
     JSArray returnTypes = new JSArray();
-
     for (BiometryType type : biometryTypes) {
       if (type != BiometryType.NONE) {
         returnTypes.put(type.getType());
       }
     }
-
     result.put("biometryTypes", returnTypes);
-
-    KeyguardManager keyguardManager = (KeyguardManager) this.getContext()
+    KeyguardManager keyguardManager = (KeyguardManager) getContext()
       .getSystemService(Context.KEYGUARD_SERVICE);
-
-    if (keyguardManager != null) {
-      result.put("deviceIsSecure", keyguardManager.isKeyguardSecure());
-    } else {
-      result.put("deviceIsSecure", false);
-    }
-
+    result.put(
+      "deviceIsSecure",
+      keyguardManager != null && keyguardManager.isKeyguardSecure()
+    );
     return result;
   }
 
@@ -176,7 +157,6 @@ public class BiometricAuthNative extends Plugin {
     JSObject result
   ) {
     String reason = "";
-
     switch (canAuthenticateResult) {
       case BiometricManager.BIOMETRIC_SUCCESS:
         break;
@@ -201,13 +181,10 @@ public class BiometricAuthNative extends Plugin {
         reason = "Unable to determine whether the user can authenticate.";
         break;
     }
-
     String errorCode = biometryErrorCodeMap.get(canAuthenticateResult);
-
     if (errorCode == null) {
       errorCode = "biometryNotAvailable";
     }
-
     result.put(strong ? "strongReason" : "reason", reason);
     result.put(strong ? "strongCode" : "code", errorCode);
   }
@@ -216,161 +193,136 @@ public class BiometricAuthNative extends Plugin {
   private ArrayList<BiometryType> getDeviceBiometryTypes() {
     ArrayList<BiometryType> types = new ArrayList<>();
     PackageManager manager = getContext().getPackageManager();
-
     if (manager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT)) {
       types.add(BiometryType.FINGERPRINT);
     }
-
     if (manager.hasSystemFeature(PackageManager.FEATURE_FACE)) {
       types.add(BiometryType.FACE);
     }
-
     if (manager.hasSystemFeature(PackageManager.FEATURE_IRIS)) {
       types.add(BiometryType.IRIS);
     }
-
     if (types.isEmpty()) {
       types.add(BiometryType.NONE);
     }
-
     return types;
   }
 
-  /**
-   * Prompt the user for biometric authentication.
-   */
+  private void createKey() {
+    try {
+      keyStore = KeyStore.getInstance("AndroidKeyStore");
+      keyStore.load(null);
+      KeyGenerator keyGenerator = KeyGenerator.getInstance(
+        KeyProperties.KEY_ALGORITHM_AES,
+        "AndroidKeyStore"
+      );
+      keyGenerator.init(
+        new KeyGenParameterSpec.Builder(
+          KEY_NAME,
+          KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
+        )
+          .setBlockModes(KeyProperties.BLOCK_MODE_CBC)
+          .setUserAuthenticationRequired(true)
+          .setInvalidatedByBiometricEnrollment(true)
+          .setUserAuthenticationValidityDurationSeconds(-1)
+          .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_PKCS7)
+          .build()
+      );
+      keyGenerator.generateKey();
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to create a key", e);
+    }
+  }
+
+  private Cipher getCipher() {
+    try {
+      Cipher cipher = Cipher.getInstance(
+        KeyProperties.KEY_ALGORITHM_AES +
+        "/" +
+        KeyProperties.BLOCK_MODE_CBC +
+        "/" +
+        KeyProperties.ENCRYPTION_PADDING_PKCS7
+      );
+      keyStore.load(null);
+      SecretKey key = (SecretKey) keyStore.getKey(KEY_NAME, null);
+      cipher.init(Cipher.ENCRYPT_MODE, key);
+      return cipher;
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to get Cipher", e);
+    }
+  }
+
   @PluginMethod
   public void internalAuthenticate(final PluginCall call) {
-    // If the user has not called checkBiometry() first, we need to get the list
-    // of supported biometry.
-    if (biometryTypes == null) {
-      biometryTypes = getDeviceBiometryTypes();
-    }
+    createKey();
+    Cipher cipher = getCipher();
+    BiometricPrompt.CryptoObject cryptoObject =
+      new BiometricPrompt.CryptoObject(cipher);
 
-    // The result of an intent is supposed to have the package name as a prefix.
-    RESULT_EXTRA_PREFIX = getContext().getPackageName() + ".";
-
-    Intent intent = new Intent(getContext(), AuthActivity.class);
-
-    // Pass the options to the activity.
-    String title = "";
-
-    // If no biometry is available, biometryTypes will be an empty list.
-    if (!biometryTypes.isEmpty()) {
-      title = biometryNameMap.get(biometryTypes.get(0));
-    }
-
-    intent.putExtra(TITLE, call.getString(TITLE, title));
-    intent.putExtra(SUBTITLE, call.getString(SUBTITLE));
-    intent.putExtra(REASON, call.getString(REASON));
-    intent.putExtra(CANCEL_TITLE, call.getString(CANCEL_TITLE));
-    intent.putExtra(
-      DEVICE_CREDENTIAL,
-      call.getBoolean(DEVICE_CREDENTIAL, false)
-    );
-    intent.putExtra(BIOMETRIC_STRENGTH, getAuthenticatorFromCall(call));
-
-    if (call.getBoolean(CONFIRMATION_REQUIRED, true) != null) {
-      intent.putExtra(
-        CONFIRMATION_REQUIRED,
-        call.getBoolean(CONFIRMATION_REQUIRED, true)
-      );
-    }
-
-    // Just in case the developer does something dumb like using a number < 1...
-    Integer maxAttemptsConfig = call.getInt(MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS);
-    int maxAttempts = Math.max(
-      maxAttemptsConfig == null ? 0 : maxAttemptsConfig,
-      1
-    );
-    intent.putExtra(MAX_ATTEMPTS, maxAttempts);
-
-    startActivityForResult(call, intent, "authenticateResult");
-  }
-
-  @ActivityCallback
-  protected void authenticateResult(PluginCall call, ActivityResult result) {
-    int resultCode = result.getResultCode();
-
-    // If the system canceled the activity, we might get RESULT_CANCELED in resultCode.
-    // In that case return that immediately, because there won't be any data.
-    if (resultCode == Activity.RESULT_CANCELED) {
-      call.reject(
-        "The system canceled authentication",
-        biometryErrorCodeMap.get(BiometricPrompt.ERROR_CANCELED)
-      );
-      return;
-    }
-
-    // Convert the string result type to an enum.
-    Intent data = result.getData();
-    String resultTypeName = null;
-
-    if (data != null) {
-      resultTypeName = data.getStringExtra(
-        RESULT_EXTRA_PREFIX + BiometricAuthNative.RESULT_TYPE
-      );
-    }
-
-    if (resultTypeName == null) {
-      call.reject(
-        "Missing data in the result of the activity",
-        INVALID_CONTEXT_ERROR
-      );
-      return;
-    }
-
-    BiometryResultType resultType;
-
-    try {
-      resultType = BiometryResultType.valueOf(resultTypeName);
-    } catch (IllegalArgumentException e) {
-      call.reject(
-        "Invalid data in the result of the activity",
-        INVALID_CONTEXT_ERROR
-      );
-      return;
-    }
-
-    int errorCode = data.getIntExtra(
-      RESULT_EXTRA_PREFIX + BiometricAuthNative.RESULT_ERROR_CODE,
-      0
-    );
-    String errorMessage = data.getStringExtra(
-      RESULT_EXTRA_PREFIX + BiometricAuthNative.RESULT_ERROR_MESSAGE
-    );
-
-    switch (resultType) {
-      case SUCCESS -> call.resolve();
-      // Biometry was successfully presented but was not recognized.
-      case FAILURE -> call.reject(errorMessage, BIOMETRIC_FAILURE);
-      // The user cancelled, the system cancelled, or some error occurred.
-      // If the user cancelled, errorMessage is the text of the "negative" button,
-      // which is not especially descriptive.
-      case ERROR -> {
-        if (errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON) {
-          errorMessage = "Cancel button was pressed";
+    BiometricPrompt biometricPrompt = new BiometricPrompt(
+      this,
+      ContextCompat.getMainExecutor(getContext()),
+      new BiometricPrompt.AuthenticationCallback() {
+        @Override
+        public void onAuthenticationSucceeded(
+          BiometricPrompt.AuthenticationResult result
+        ) {
+          Cipher cipher = result.getCryptoObject().getCipher();
+          try {
+            byte[] encryptedData = getEncryptedData(); // Retrieve actual encrypted data
+            byte[] decryptedData = cipher.doFinal(encryptedData);
+            // Handle the decrypted data, e.g., load your session or secondary key
+            call.resolve();
+          } catch (Exception e) {
+            call.reject("Failed to decrypt data", e);
+          }
         }
 
-        call.reject(errorMessage, biometryErrorCodeMap.get(errorCode));
+        @Override
+        public void onAuthenticationFailed() {
+          call.reject("Biometric authentication failed", BIOMETRIC_FAILURE);
+        }
+
+        @Override
+        public void onAuthenticationError(
+          int errorCode,
+          @NonNull CharSequence errString
+        ) {
+          call.reject(
+            errString.toString(),
+            biometryErrorCodeMap.get(errorCode)
+          );
+        }
       }
-    }
+    );
+
+    biometricPrompt.authenticate(cryptoObject);
   }
 
-  enum BiometryType {
-    NONE(0),
-    FINGERPRINT(3),
-    FACE(4),
-    IRIS(5);
+  // Method to store encrypted data
+  private void storeEncryptedData(byte[] encryptedData) {
+    SharedPreferences sharedPreferences = getContext()
+      .getSharedPreferences("BiometricAuthPrefs", Context.MODE_PRIVATE);
+    SharedPreferences.Editor editor = sharedPreferences.edit();
+    editor.putString(
+      "encryptedData",
+      Base64.encodeToString(encryptedData, Base64.DEFAULT)
+    );
+    editor.apply();
+  }
 
-    private final int type;
-
-    BiometryType(int type) {
-      this.type = type;
-    }
-
-    public int getType() {
-      return this.type;
+  // Method to retrieve encrypted data
+  private byte[] getEncryptedData() {
+    SharedPreferences sharedPreferences = getContext()
+      .getSharedPreferences("BiometricAuthPrefs", Context.MODE_PRIVATE);
+    String encryptedDataString = sharedPreferences.getString(
+      "encryptedData",
+      null
+    );
+    if (encryptedDataString != null) {
+      return Base64.decode(encryptedDataString, Base64.DEFAULT);
+    } else {
+      throw new RuntimeException("No encrypted data found");
     }
   }
 }
