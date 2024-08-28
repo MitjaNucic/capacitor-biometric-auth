@@ -383,21 +383,30 @@ public class BiometricAuthNative extends Plugin {
     String title,
     BiometricPrompt.CryptoObject cryptoObject
   ) {
-    BiometricPrompt biometricPrompt = new BiometricPrompt(
-      getActivity(),
-      authenticationCallback
-    );
+    getActivity()
+      .runOnUiThread(() -> {
+        try {
+          BiometricPrompt biometricPrompt = new BiometricPrompt(
+            getActivity(),
+            authenticationCallback
+          );
 
-    BiometricPrompt.PromptInfo promptInfo =
-      new BiometricPrompt.PromptInfo.Builder()
-        .setTitle(call.getString(TITLE, title))
-        .setSubtitle(call.getString(SUBTITLE))
-        .setDescription(call.getString(REASON))
-        .setNegativeButtonText(call.getString(CANCEL_TITLE, "Cancel"))
-        .setConfirmationRequired(call.getBoolean(CONFIRMATION_REQUIRED, true))
-        .build();
+          BiometricPrompt.PromptInfo promptInfo =
+            new BiometricPrompt.PromptInfo.Builder()
+              .setTitle(call.getString(TITLE, title))
+              .setSubtitle(call.getString(SUBTITLE))
+              .setDescription(call.getString(REASON))
+              .setNegativeButtonText(call.getString(CANCEL_TITLE, "Cancel"))
+              .setConfirmationRequired(
+                call.getBoolean(CONFIRMATION_REQUIRED, true)
+              )
+              .build();
 
-    biometricPrompt.authenticate(promptInfo, cryptoObject);
+          biometricPrompt.authenticate(promptInfo, cryptoObject);
+        } catch (Exception e) {
+          call.reject("Failed to authenticate", e);
+        }
+      });
   }
 
   private void storeEncryptedData(byte[] encryptedData) {
