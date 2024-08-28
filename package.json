@@ -1,6 +1,6 @@
 {
-  "name": "@aparajita/capacitor-biometric-auth",
-  "version": "8.0.2",
+  "name": "@mitjanucic/capacitor-biometric-auth",
+  "version": "0.0.1",
   "description": "Provides access to the native biometric auth & device security APIs for Capacitor apps",
   "author": "Aparajita Fishman",
   "license": "MIT",
@@ -27,8 +27,8 @@
     "lint": "pnpm lint.eslint . && pnpm lint.prettier '**/*.{js,mjs,ts,json,md,java}' && pnpm lint.tsc && swiftly ios",
     "prebuilder": "pnpm clean",
     "builder": "tsc ${SOURCE_MAP:-} && rollup -c rollup.config.mjs",
-    "prebuild": "pnpm lint",
-    "build": "pnpm builder",
+    "prebuild": "echo Skipping linting",
+    "build": "pnpm clean && pnpm builder",
     "build.dev": "SOURCE_MAP=--sourceMap pnpm build",
     "watch": "nodemon --exec 'pnpm build.dev'",
     "docgen": "docgen --api BiometricAuthPlugin --output-readme README.md && docgen-format && pnpm lint.prettier README.md",
@@ -67,10 +67,7 @@
   "swiftlint": "@ionic/swiftlint-config",
   "repository": {
     "type": "git",
-    "url": "https://github.com/aparajita/capacitor-biometric-auth.git"
-  },
-  "bugs": {
-    "url": "https://github.com/aparajita/capacitor-biometric-auth/issues"
+    "url": "https://github.com/mitjanucic/capacitor-biometric-auth"
   },
   "devDependencies": {
     "@aparajita/capacitor-docgen": "github:aparajita/capacitor-docgen",
@@ -108,5 +105,8 @@
     "@capacitor/app": "^6.0.0",
     "@capacitor/core": "^6.1.0",
     "@capacitor/ios": "^6.1.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   }
 }

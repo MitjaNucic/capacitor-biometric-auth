@@ -1,30 +1,29 @@
 package com.aparajita.capacitor.biometricauth;
 
 import android.annotation.SuppressLint;
-import android.app.Activity;
 import android.app.KeyguardManager;
 import android.content.Context;
-import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
-import androidx.activity.result.ActivityResult;
+import android.util.Base64;
 import androidx.annotation.NonNull;
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
+import androidx.core.content.ContextCompat;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
-import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import javax.crypto.Cipher;
-import javax.crypto.KeyGenerator;
-import javax.crypto.SecretKey;
 import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.HashMap;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
 
 @SuppressLint("RestrictedApi")
 @CapacitorPlugin(name = "BiometricAuthNative")
@@ -102,16 +101,13 @@ public class BiometricAuthNative extends Plugin {
 
   private int getAuthenticatorFromCall(PluginCall call) {
     int authenticator = BiometricManager.Authenticators.BIOMETRIC_WEAK;
-
     Integer value = call.getInt(
       "androidBiometryStrength",
       BiometryStrength.WEAK.ordinal()
     );
-
     if (value != null && value == BiometryStrength.STRONG.ordinal()) {
       authenticator = BiometricManager.Authenticators.BIOMETRIC_STRONG;
     }
-
     return authenticator;
   }
 
@@ -123,51 +119,37 @@ public class BiometricAuthNative extends Plugin {
   private JSObject checkBiometry() {
     JSObject result = new JSObject();
     BiometricManager manager = BiometricManager.from(getContext());
-
     int weakBiometryResult = manager.canAuthenticate(
       BiometricManager.Authenticators.BIOMETRIC_WEAK
     );
-
     setReasonAndCode(weakBiometryResult, false, result);
-
     result.put(
       "isAvailable",
       weakBiometryResult == BiometricManager.BIOMETRIC_SUCCESS
     );
-
     int strongBiometryResult = manager.canAuthenticate(
       BiometricManager.Authenticators.BIOMETRIC_STRONG
     );
-
     setReasonAndCode(strongBiometryResult, true, result);
-
     result.put(
       "strongBiometryIsAvailable",
       strongBiometryResult == BiometricManager.BIOMETRIC_SUCCESS
     );
-
     biometryTypes = getDeviceBiometryTypes();
     result.put("biometryType", biometryTypes.get(0).getType());
-
     JSArray returnTypes = new JSArray();
-
     for (BiometryType type : biometryTypes) {
       if (type != BiometryType.NONE) {
         returnTypes.put(type.getType());
       }
     }
-
     result.put("biometryTypes", returnTypes);
-
-    KeyguardManager keyguardManager = (KeyguardManager) this.getContext()
+    KeyguardManager keyguardManager = (KeyguardManager) getContext()
       .getSystemService(Context.KEYGUARD_SERVICE);
-
-    if (keyguardManager != null) {
-      result.put("deviceIsSecure", keyguardManager.isKeyguardSecure());
-    } else {
-      result.put("deviceIsSecure", false);
-    }
-
+    result.put(
+      "deviceIsSecure",
+      keyguardManager != null && keyguardManager.isKeyguardSecure()
+    );
     return result;
   }
 
@@ -177,7 +159,6 @@ public class BiometricAuthNative extends Plugin {
     JSObject result
   ) {
     String reason = "";
-
     switch (canAuthenticateResult) {
       case BiometricManager.BIOMETRIC_SUCCESS:
         break;
@@ -202,13 +183,10 @@ public class BiometricAuthNative extends Plugin {
         reason = "Unable to determine whether the user can authenticate.";
         break;
     }
-
     String errorCode = biometryErrorCodeMap.get(canAuthenticateResult);
-
     if (errorCode == null) {
       errorCode = "biometryNotAvailable";
     }
-
     result.put(strong ? "strongReason" : "reason", reason);
     result.put(strong ? "strongCode" : "code", errorCode);
   }
@@ -217,23 +195,18 @@ public class BiometricAuthNative extends Plugin {
   private ArrayList<BiometryType> getDeviceBiometryTypes() {
     ArrayList<BiometryType> types = new ArrayList<>();
     PackageManager manager = getContext().getPackageManager();
-
     if (manager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT)) {
       types.add(BiometryType.FINGERPRINT);
     }
-
     if (manager.hasSystemFeature(PackageManager.FEATURE_FACE)) {
       types.add(BiometryType.FACE);
     }
-
     if (manager.hasSystemFeature(PackageManager.FEATURE_IRIS)) {
       types.add(BiometryType.IRIS);
     }
-
     if (types.isEmpty()) {
       types.add(BiometryType.NONE);
     }
-
     return types;
   }
 
@@ -241,23 +214,22 @@ public class BiometricAuthNative extends Plugin {
     try {
       keyStore = KeyStore.getInstance("AndroidKeyStore");
       keyStore.load(null);
-
       KeyGenerator keyGenerator = KeyGenerator.getInstance(
         KeyProperties.KEY_ALGORITHM_AES,
         "AndroidKeyStore"
       );
-
-      keyGenerator.init(new KeyGenParameterSpec.Builder(
+      keyGenerator.init(
+        new KeyGenParameterSpec.Builder(
           KEY_NAME,
           KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
         )
-        .setBlockModes(KeyProperties.BLOCK_MODE_CBC)
-        .setUserAuthenticationRequired(true)
-        .setInvalidatedByBiometricEnrollment(true)
-        .setUserAuthenticationValidityDurationSeconds(-1)
-        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_PKCS7)
-        .build());
-
+          .setBlockModes(KeyProperties.BLOCK_MODE_CBC)
+          .setUserAuthenticationRequired(true)
+          .setInvalidatedByBiometricEnrollment(true)
+          .setUserAuthenticationValidityDurationSeconds(-1)
+          .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_PKCS7)
+          .build()
+      );
       keyGenerator.generateKey();
     } catch (Exception e) {
       throw new RuntimeException("Failed to create a key", e);
@@ -267,8 +239,10 @@ public class BiometricAuthNative extends Plugin {
   private Cipher getCipher() {
     try {
       Cipher cipher = Cipher.getInstance(
-        KeyProperties.KEY_ALGORITHM_AES + "/" +
-        KeyProperties.BLOCK_MODE_CBC + "/" +
+        KeyProperties.KEY_ALGORITHM_AES +
+        "/" +
+        KeyProperties.BLOCK_MODE_CBC +
+        "/" +
         KeyProperties.ENCRYPTION_PADDING_PKCS7
       );
       keyStore.load(null);
@@ -284,17 +258,20 @@ public class BiometricAuthNative extends Plugin {
   public void internalAuthenticate(final PluginCall call) {
     createKey();
     Cipher cipher = getCipher();
-    BiometricPrompt.CryptoObject cryptoObject = new BiometricPrompt.CryptoObject(cipher);
+    BiometricPrompt.CryptoObject cryptoObject =
+      new BiometricPrompt.CryptoObject(cipher);
 
     BiometricPrompt biometricPrompt = new BiometricPrompt(
       this,
       ContextCompat.getMainExecutor(getContext()),
       new BiometricPrompt.AuthenticationCallback() {
         @Override
-        public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+        public void onAuthenticationSucceeded(
+          BiometricPrompt.AuthenticationResult result
+        ) {
           Cipher cipher = result.getCryptoObject().getCipher();
           try {
-            byte[] encryptedData = ...; // Retrieve your encrypted data
+            byte[] encryptedData = getEncryptedData(); // Retrieve actual encrypted data
             byte[] decryptedData = cipher.doFinal(encryptedData);
             // Handle the decrypted data, e.g., load your session or secondary key
             call.resolve();
@@ -309,12 +286,45 @@ public class BiometricAuthNative extends Plugin {
         }
 
         @Override
-        public void onAuthenticationError(int errorCode, @NonNull CharSequence errString) {
-          call.reject(errString.toString(), biometryErrorCodeMap.get(errorCode));
+        public void onAuthenticationError(
+          int errorCode,
+          @NonNull CharSequence errString
+        ) {
+          call.reject(
+            errString.toString(),
+            biometryErrorCodeMap.get(errorCode)
+          );
         }
       }
     );
 
     biometricPrompt.authenticate(cryptoObject);
+  }
+
+  // Method to store encrypted data
+  private void storeEncryptedData(byte[] encryptedData) {
+    SharedPreferences sharedPreferences = getContext()
+      .getSharedPreferences("BiometricAuthPrefs", Context.MODE_PRIVATE);
+    SharedPreferences.Editor editor = sharedPreferences.edit();
+    editor.putString(
+      "encryptedData",
+      Base64.encodeToString(encryptedData, Base64.DEFAULT)
+    );
+    editor.apply();
+  }
+
+  // Method to retrieve encrypted data
+  private byte[] getEncryptedData() {
+    SharedPreferences sharedPreferences = getContext()
+      .getSharedPreferences("BiometricAuthPrefs", Context.MODE_PRIVATE);
+    String encryptedDataString = sharedPreferences.getString(
+      "encryptedData",
+      null
+    );
+    if (encryptedDataString != null) {
+      return Base64.decode(encryptedDataString, Base64.DEFAULT);
+    } else {
+      throw new RuntimeException("No encrypted data found");
+    }
   }
 }
