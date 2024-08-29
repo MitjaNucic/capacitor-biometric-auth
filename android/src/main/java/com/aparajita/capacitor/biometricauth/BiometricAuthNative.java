@@ -369,39 +369,57 @@ public class BiometricAuthNative extends Plugin {
     }
   }
 
-  private final BiometricPrompt.AuthenticationCallback authenticationCallback =
-    new BiometricPrompt.AuthenticationCallback() {
-      @Override
-      public void onAuthenticationSucceeded(
-        @NonNull BiometricPrompt.AuthenticationResult result
-      ) {
-        try {
-          // Retrieve the encrypted data using the saved call
-          byte[] encryptedData = getEncryptedData(savedCall);
+ private final BiometricPrompt.AuthenticationCallback authenticationCallback =
+   new BiometricPrompt.AuthenticationCallback() {
+     @Override
+     public void onAuthenticationSucceeded(
+       @NonNull BiometricPrompt.AuthenticationResult result
+     ) {
+         try {
+             // Retrieve the encrypted data using the saved call
+             byte[] encryptedData = getEncryptedData(savedCall);
 
-          // Decrypt the data
-          byte[] decryptedData = result
-            .getCryptoObject()
-            .getCipher()
-            .doFinal(encryptedData);
+             // Decrypt the data
+             byte[] decryptedData = result.getCryptoObject().getCipher().doFinal(encryptedData);
 
-          // Convert decrypted data to a string (or appropriate type)
-          String decryptedDataString = new String(decryptedData, "UTF-8");
+             // Convert decrypted data to a string (or appropriate type)
+             String decryptedDataString = new String(decryptedData, StandardCharsets.UTF_8);
 
-          // Prepare the result object to send back to the frontend
-          JSObject resultObject = new JSObject();
-          resultObject.put("decryptedData", decryptedDataString);
+             // Prepare the result object to send back to the frontend
+             JSObject resultObject = new JSObject();
+             resultObject.put("decryptedData", decryptedDataString);
 
-          // Resolve the saved call with the decrypted data
-          savedCall.resolve(resultObject);
-        } catch (Exception e) {
-          e.printStackTrace();
-          savedCall.reject("Decryption failed.");
-        } finally {
-          // Clean up the saved call
-          savedCall = null;
-        }
-      }
+             // Resolve the saved call with the decrypted data
+             savedCall.resolve(resultObject);
+
+         } catch (Exception e) {
+             e.printStackTrace();
+             savedCall.reject("Decryption failed.");
+         } finally {
+             // Clean up the saved call
+             savedCall = null;
+         }
+     }
+
+     @Override
+     public void onAuthenticationFailed() {
+         if (savedCall != null) {
+             savedCall.reject("Authentication failed.");
+             savedCall = null;
+         }
+     }
+
+     @Override
+     public void onAuthenticationError(
+       int errorCode,
+       @NonNull CharSequence errString
+     ) {
+         if (savedCall != null) {
+             savedCall.reject("Authentication error: " + errString);
+             savedCall = null;
+         }
+     }
+ };
 
       @Override
       public void onAuthenticationFailed() {
