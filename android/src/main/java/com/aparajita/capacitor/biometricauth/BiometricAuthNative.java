@@ -53,7 +53,9 @@ public class BiometricAuthNative extends Plugin {
   private static final HashMap<BiometryType, String> biometryNameMap;
   private static final String INVALID_CONTEXT_ERROR = "invalidContext";
   public static String RESULT_EXTRA_PREFIX;
-
+  public static String ENCRYPTED_DATA = "encryptedData";
+  public static String ENCRYPTED_DATA_KEY = "encryptedDataKey";
+  private PluginCall savedCall;
   private KeyStore keyStore;
   private Cipher cipher;
   private static final String KEY_NAME = "yourKeyName";
@@ -297,6 +299,19 @@ public class BiometricAuthNative extends Plugin {
   @PluginMethod
   public void internalAuthenticate(final PluginCall call) {
     try {
+      // Save the call for later use in the callbacks
+      this.savedCall = call;
+
+      // Ensure that encryptedData and encryptedDataKey are provided
+      if (!call.getData().has(ENCRYPTED_DATA) || !call.getData().has(ENCRYPTED_DATA_KEY)) {
+        call.reject("Missing encryptedData or encryptedDataKey");
+        return;
+      }
+
+      // Store the provided encryptedData
+      storeEncryptedData(Base64.decode(call.getString(ENCRYPTED_DATA), Base64.DEFAULT), call);
+
+      // Initialize key and cipher for encryption
       createKey();
       boolean cipherInitialized = initCipher();
 
@@ -353,20 +368,38 @@ public class BiometricAuthNative extends Plugin {
         @NonNull BiometricPrompt.AuthenticationResult result
       ) {
         try {
-          byte[] encryptedData = getEncryptedData();
-          byte[] decryptedData = result
-            .getCryptoObject()
-            .getCipher()
-            .doFinal(encryptedData);
-          // Handle decrypted data in your application workflow
+          // Retrieve the encrypted data using the saved call
+          byte[] encryptedData = getEncryptedData(savedCall);
+
+          // Decrypt the data
+          byte[] decryptedData = result.getCryptoObject().getCipher().doFinal(encryptedData);
+
+          // Convert decrypted data to a string (or appropriate type)
+          String decryptedDataString = new String(decryptedData, "UTF-8");
+
+          // Prepare the result object to send back to the frontend
+          JSObject resultObject = new JSObject();
+          resultObject.put("decryptedData", decryptedDataString);
+
+          // Resolve the saved call with the decrypted data
+          savedCall.resolve(resultObject);
+
         } catch (Exception e) {
           e.printStackTrace();
+          savedCall.reject("Decryption failed.");
+        } finally {
+          // Clean up the saved call
+          savedCall = null;
         }
       }
 
       @Override
       public void onAuthenticationFailed() {
         // Handle failure case, e.g., logging or notifying the user
+        if (savedCall != null) {
+          savedCall.reject("Authentication failed.");
+          savedCall = null;
+        }
       }
 
       @Override
@@ -375,9 +408,12 @@ public class BiometricAuthNative extends Plugin {
         @NonNull CharSequence errString
       ) {
         // Handle error case, e.g., logging or notifying the user
+        if (savedCall != null) {
+          savedCall.reject("Authentication error: " + errString);
+          savedCall = null;
+        }
       }
     };
-
   private void startBiometricPromptWithCryptoObject(
     PluginCall call,
     String title,
@@ -409,22 +445,22 @@ public class BiometricAuthNative extends Plugin {
       });
   }
 
-  private void storeEncryptedData(byte[] encryptedData) {
+  private void storeEncryptedData(byte[] encryptedData,PluginCall call) {
     SharedPreferences sharedPreferences = getContext()
-      .getSharedPreferences("BiometricAuthPrefs", Context.MODE_PRIVATE);
+      .getSharedPreferences(call.getString(ENCRYPTED_DATA_KEY), Context.MODE_PRIVATE);
     SharedPreferences.Editor editor = sharedPreferences.edit();
     editor.putString(
-      "encryptedData",
+      call.getString(ENCRYPTED_DATA),
       Base64.encodeToString(encryptedData, Base64.DEFAULT)
     );
     editor.apply();
   }
 
-  private byte[] getEncryptedData() {
+  private byte[] getEncryptedData(PluginCall call) {
     SharedPreferences sharedPreferences = getContext()
-      .getSharedPreferences("BiometricAuthPrefs", Context.MODE_PRIVATE);
+      .getSharedPreferences(call.getString(ENCRYPTED_DATA_KEY), Context.MODE_PRIVATE);
     String encryptedDataString = sharedPreferences.getString(
-      "encryptedData",
+      call.getString(ENCRYPTED_DATA),
       null
     );
     if (encryptedDataString != null) {

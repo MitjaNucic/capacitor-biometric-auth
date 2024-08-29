@@ -152,6 +152,9 @@ export interface AuthenticateOptions {
    * Default: `AndroidBiometryStrength.weak`
    */
   androidBiometryStrength?: AndroidBiometryStrength
+
+  encryptedData?: string
+  encryptedDataKey?: string
 }
 
 /**
