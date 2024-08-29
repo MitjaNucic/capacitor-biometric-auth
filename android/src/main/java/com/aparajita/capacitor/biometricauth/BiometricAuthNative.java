@@ -11,6 +11,7 @@ import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import android.util.Log;
 import androidx.activity.result.ActivityResult;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -303,13 +304,19 @@ public class BiometricAuthNative extends Plugin {
       this.savedCall = call;
 
       // Ensure that encryptedData and encryptedDataKey are provided
-      if (!call.getData().has(ENCRYPTED_DATA) || !call.getData().has(ENCRYPTED_DATA_KEY)) {
+      if (
+        !call.getData().has(ENCRYPTED_DATA) ||
+        !call.getData().has(ENCRYPTED_DATA_KEY)
+      ) {
         call.reject("Missing encryptedData or encryptedDataKey");
         return;
       }
 
       // Store the provided encryptedData
-      storeEncryptedData(Base64.decode(call.getString(ENCRYPTED_DATA), Base64.DEFAULT), call);
+      storeEncryptedData(
+        Base64.decode(call.getString(ENCRYPTED_DATA), Base64.DEFAULT),
+        call
+      );
 
       // Initialize key and cipher for encryption
       createKey();
@@ -372,7 +379,10 @@ public class BiometricAuthNative extends Plugin {
           byte[] encryptedData = getEncryptedData(savedCall);
 
           // Decrypt the data
-          byte[] decryptedData = result.getCryptoObject().getCipher().doFinal(encryptedData);
+          byte[] decryptedData = result
+            .getCryptoObject()
+            .getCipher()
+            .doFinal(encryptedData);
 
           // Convert decrypted data to a string (or appropriate type)
           String decryptedDataString = new String(decryptedData, "UTF-8");
@@ -383,7 +393,6 @@ public class BiometricAuthNative extends Plugin {
 
           // Resolve the saved call with the decrypted data
           savedCall.resolve(resultObject);
-
         } catch (Exception e) {
           e.printStackTrace();
           savedCall.reject("Decryption failed.");
@@ -414,6 +423,7 @@ public class BiometricAuthNative extends Plugin {
         }
       }
     };
+
   private void startBiometricPromptWithCryptoObject(
     PluginCall call,
     String title,
@@ -445,9 +455,16 @@ public class BiometricAuthNative extends Plugin {
       });
   }
 
-  private void storeEncryptedData(byte[] encryptedData,PluginCall call) {
+  private void storeEncryptedData(byte[] encryptedData, PluginCall call) {
+    Log.d(
+      "BiometricAuthNative",
+      "Storing encrypted data with key: " + call.getString(ENCRYPTED_DATA_KEY)
+    );
     SharedPreferences sharedPreferences = getContext()
-      .getSharedPreferences(call.getString(ENCRYPTED_DATA_KEY), Context.MODE_PRIVATE);
+      .getSharedPreferences(
+        call.getString(ENCRYPTED_DATA_KEY),
+        Context.MODE_PRIVATE
+      );
     SharedPreferences.Editor editor = sharedPreferences.edit();
     editor.putString(
       call.getString(ENCRYPTED_DATA),
@@ -457,8 +474,16 @@ public class BiometricAuthNative extends Plugin {
   }
 
   private byte[] getEncryptedData(PluginCall call) {
+    Log.d(
+      "BiometricAuthNative",
+      "Retrieving encrypted data with key: " +
+      call.getString(ENCRYPTED_DATA_KEY)
+    );
     SharedPreferences sharedPreferences = getContext()
-      .getSharedPreferences(call.getString(ENCRYPTED_DATA_KEY), Context.MODE_PRIVATE);
+      .getSharedPreferences(
+        call.getString(ENCRYPTED_DATA_KEY),
+        Context.MODE_PRIVATE
+      );
     String encryptedDataString = sharedPreferences.getString(
       call.getString(ENCRYPTED_DATA),
       null
@@ -466,6 +491,10 @@ public class BiometricAuthNative extends Plugin {
     if (encryptedDataString != null) {
       return Base64.decode(encryptedDataString, Base64.DEFAULT);
     } else {
+      Log.e(
+        "BiometricAuthNative",
+        "No encrypted data found for key: " + call.getString(ENCRYPTED_DATA_KEY)
+      );
       throw new RuntimeException("No encrypted data found");
     }
   }
