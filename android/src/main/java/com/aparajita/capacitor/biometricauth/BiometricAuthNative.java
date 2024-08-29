@@ -24,6 +24,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.KeyStore;
 import java.util.ArrayList;
@@ -312,9 +313,9 @@ public class BiometricAuthNative extends Plugin {
         return;
       }
 
-      // Store the provided encryptedData
+      // Store the provided encryptedData directly without Base64 decoding
       storeEncryptedData(
-        Base64.decode(call.getString(ENCRYPTED_DATA), Base64.DEFAULT),
+        call.getString(ENCRYPTED_DATA).getBytes(StandardCharsets.UTF_8),
         call
       );
 
