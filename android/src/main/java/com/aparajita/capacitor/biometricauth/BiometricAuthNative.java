@@ -15,7 +15,6 @@ import android.util.Log;
 import androidx.activity.result.ActivityResult;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.annotation.RequiresApi;
 import androidx.biometric.BiometricManager;
 import androidx.biometric.BiometricPrompt;
 import com.getcapacitor.JSArray;
@@ -243,19 +242,17 @@ public class BiometricAuthNative extends Plugin {
   }
 
   private void createKey() throws Exception {
-    try {
-      keyStore = KeyStore.getInstance("AndroidKeyStore");
-      keyStore.load(null);
+    keyStore = KeyStore.getInstance("AndroidKeyStore");
+    keyStore.load(null);
 
-      KeyGenerator keyGenerator = KeyGenerator.getInstance(
-        KeyProperties.KEY_ALGORITHM_AES,
-        "AndroidKeyStore"
-      );
-
-      KeyGenParameterSpec keyGenParameterSpec = null;
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-          keyGenParameterSpec = new KeyGenParameterSpec.Builder(
+    KeyGenerator keyGenerator = KeyGenerator.getInstance(
+      KeyProperties.KEY_ALGORITHM_AES,
+      "AndroidKeyStore"
+    );
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        keyGenerator.init(
+          new KeyGenParameterSpec.Builder(
             KEY_NAME,
             KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
           )
@@ -263,35 +260,27 @@ public class BiometricAuthNative extends Plugin {
             .setUserAuthenticationRequired(true)
             .setInvalidatedByBiometricEnrollment(true)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_PKCS7)
-            .build();
-        }
+            .build()
+        );
       }
-
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        keyGenerator.init(keyGenParameterSpec);
-      }
-      keyGenerator.generateKey();
-    } catch (Exception e) {
-      Log.e("BiometricAuthNative", "Key generation failed", e);
-      throw e;
     }
+    keyGenerator.generateKey();
   }
 
-
-  @RequiresApi(api = Build.VERSION_CODES.M)
   private boolean initCipher() {
     try {
       keyStore.load(null);
       SecretKey key = (SecretKey) keyStore.getKey(KEY_NAME, null);
       cipher = Cipher.getInstance(
-        KeyProperties.KEY_ALGORITHM_AES + "/" +
-          KeyProperties.BLOCK_MODE_CBC + "/" +
-          KeyProperties.ENCRYPTION_PADDING_PKCS7
+        KeyProperties.KEY_ALGORITHM_AES +
+        "/" +
+        KeyProperties.BLOCK_MODE_CBC +
+        "/" +
+        KeyProperties.ENCRYPTION_PADDING_PKCS7
       );
       cipher.init(Cipher.ENCRYPT_MODE, key);
       return true;
     } catch (Exception e) {
-      Log.e("BiometricAuthNative", "Cipher initialization failed", e);
       e.printStackTrace();
       return false;
     }
@@ -316,20 +305,23 @@ public class BiometricAuthNative extends Plugin {
       this.savedCall = call;
 
       // Ensure that encryptedData and encryptedDataKey are provided
-      if (!call.getData().has(ENCRYPTED_DATA) || !call.getData().has(ENCRYPTED_DATA_KEY)) {
+      if (
+        !call.getData().has(ENCRYPTED_DATA) ||
+        !call.getData().has(ENCRYPTED_DATA_KEY)
+      ) {
         call.reject("Missing encryptedData or encryptedDataKey");
         return;
       }
 
-      // Convert the plain text encryptedData to a byte array
-      storeEncryptedData(call.getString(ENCRYPTED_DATA).getBytes(StandardCharsets.UTF_8), call);
+      // Store the provided encryptedData directly without Base64 decoding
+      storeEncryptedData(
+        call.getString(ENCRYPTED_DATA).getBytes(StandardCharsets.UTF_8),
+        call
+      );
 
       // Initialize key and cipher for encryption
       createKey();
-      boolean cipherInitialized = false;
-      if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-        cipherInitialized = initCipher();
-      }
+      boolean cipherInitialized = initCipher();
 
       if (cipherInitialized) {
         BiometricPrompt.CryptoObject cryptoObject =
