@@ -153,8 +153,8 @@ export interface AuthenticateOptions {
    */
   androidBiometryStrength?: AndroidBiometryStrength
 
-  encryptedData?: string
-  encryptedDataKey?: string
+  data?: string
+  dataKey?: string
 }
 
 /**

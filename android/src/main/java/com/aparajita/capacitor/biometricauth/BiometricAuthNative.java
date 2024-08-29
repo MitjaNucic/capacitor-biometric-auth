@@ -32,6 +32,7 @@ import java.util.HashMap;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
 
 @SuppressLint("RestrictedApi")
 @CapacitorPlugin(name = "BiometricAuthNative")
@@ -55,12 +56,12 @@ public class BiometricAuthNative extends Plugin {
   private static final HashMap<BiometryType, String> biometryNameMap;
   private static final String INVALID_CONTEXT_ERROR = "invalidContext";
   public static String RESULT_EXTRA_PREFIX;
-  public static String ENCRYPTED_DATA = "encryptedData";
-  public static String ENCRYPTED_DATA_KEY = "encryptedDataKey";
+  public static String DATA = "data";
+  public static String DATA_KEY = "data_key";
+  public static String IV_KEY = "ivKey";
   private PluginCall savedCall;
   private KeyStore keyStore;
   private Cipher cipher;
-  private static final String KEY_NAME = "yourKeyName";
 
   static {
     biometryErrorCodeMap = new HashMap<>();
@@ -241,7 +242,7 @@ public class BiometricAuthNative extends Plugin {
     return types;
   }
 
-  private void createKey() throws Exception {
+  private void createKey(String keyName) throws Exception {
     keyStore = KeyStore.getInstance("AndroidKeyStore");
     keyStore.load(null);
 
@@ -250,27 +251,35 @@ public class BiometricAuthNative extends Plugin {
       "AndroidKeyStore"
     );
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-        keyGenerator.init(
-          new KeyGenParameterSpec.Builder(
-            KEY_NAME,
-            KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
-          )
-            .setBlockModes(KeyProperties.BLOCK_MODE_CBC)
-            .setUserAuthenticationRequired(true)
-            .setInvalidatedByBiometricEnrollment(true)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_PKCS7)
-            .build()
-        );
-      }
+      keyGenerator.init(
+        new KeyGenParameterSpec.Builder(
+          keyName,
+          KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
+        )
+          .setBlockModes(KeyProperties.BLOCK_MODE_CBC)
+          .setUserAuthenticationRequired(true)
+          .setInvalidatedByBiometricEnrollment(true)
+          .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_PKCS7)
+          .setUserAuthenticationValidityDurationSeconds(-1)
+          .build()
+      );
     }
     keyGenerator.generateKey();
   }
 
-  private boolean initCipher() {
+  private boolean initCipher(String keyName) {
     try {
       keyStore.load(null);
-      SecretKey key = (SecretKey) keyStore.getKey(KEY_NAME, null);
+      SecretKey key = (SecretKey) keyStore.getKey(keyName, null);
+
+      if (key == null) {
+        Log.e(
+          "BiometricAuthNative",
+          "SecretKey is null. Failed to retrieve key from KeyStore."
+        );
+        return false;
+      }
+
       cipher = Cipher.getInstance(
         KeyProperties.KEY_ALGORITHM_AES +
         "/" +
@@ -279,18 +288,35 @@ public class BiometricAuthNative extends Plugin {
         KeyProperties.ENCRYPTION_PADDING_PKCS7
       );
       cipher.init(Cipher.ENCRYPT_MODE, key);
+
+      // Store the IV after encryption initialization
+      byte[] iv = cipher.getIV();
+      storeIV(iv, savedCall);
+      Log.d(
+        "BiometricAuthNative",
+        "Encryption IV: " + Base64.encodeToString(iv, Base64.DEFAULT)
+      );
+
       return true;
     } catch (Exception e) {
-      e.printStackTrace();
+      Log.e("BiometricAuthNative", "Cipher initialization failed", e);
       return false;
     }
   }
 
   @Nullable
-  private BiometricPrompt.CryptoObject createCryptoObject() {
+  private BiometricPrompt.CryptoObject createCryptoObject(String keyName) {
     try {
-      SecretKey key = (SecretKey) keyStore.getKey(KEY_NAME, null);
-      cipher.init(Cipher.ENCRYPT_MODE, key);
+      SecretKey key = (SecretKey) keyStore.getKey(keyName, null);
+
+      // Retrieve the IV from stored data and use it for decryption
+      byte[] iv = getStoredIV(savedCall);
+      Log.d(
+        "BiometricAuthNative",
+        "Decryption IV: " + Base64.encodeToString(iv, Base64.DEFAULT)
+      );
+      cipher.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(iv));
+
       return new BiometricPrompt.CryptoObject(cipher);
     } catch (Exception e) {
       e.printStackTrace();
@@ -305,25 +331,19 @@ public class BiometricAuthNative extends Plugin {
       this.savedCall = call;
 
       // Ensure that encryptedData and encryptedDataKey are provided
-      if (
-        !call.getData().has(ENCRYPTED_DATA) ||
-        !call.getData().has(ENCRYPTED_DATA_KEY)
-      ) {
+      if (!call.getData().has(DATA) || !call.getData().has(DATA_KEY)) {
         call.reject("Missing encryptedData or encryptedDataKey");
         return;
       }
 
-      // Store the provided encryptedData directly without Base64 decoding
-      storeEncryptedData(
-        call.getString(ENCRYPTED_DATA).getBytes(StandardCharsets.UTF_8),
-        call
-      );
+      String encryptedDataKey = call.getString(DATA_KEY);
 
       // Initialize key and cipher for encryption
-      createKey();
-      boolean cipherInitialized = initCipher();
+      createKey(encryptedDataKey);
+      boolean cipherInitialized = initCipher(encryptedDataKey);
 
       if (cipherInitialized) {
+        // Create a CryptoObject for the BiometricPrompt
         BiometricPrompt.CryptoObject cryptoObject =
           new BiometricPrompt.CryptoObject(cipher);
         startBiometricPromptWithCryptoObject(
@@ -369,61 +389,60 @@ public class BiometricAuthNative extends Plugin {
     }
   }
 
- private final BiometricPrompt.AuthenticationCallback authenticationCallback =
-   new BiometricPrompt.AuthenticationCallback() {
-     @Override
-     public void onAuthenticationSucceeded(
-       @NonNull BiometricPrompt.AuthenticationResult result
-     ) {
-         try {
-             // Retrieve the encrypted data using the saved call
-             byte[] encryptedData = getEncryptedData(savedCall);
+  private final BiometricPrompt.AuthenticationCallback authenticationCallback =
+    new BiometricPrompt.AuthenticationCallback() {
+      @Override
+      public void onAuthenticationSucceeded(
+        @NonNull BiometricPrompt.AuthenticationResult result
+      ) {
+        try {
+          Log.d("BiometricAuthNative", "Authentication succeeded");
 
-             // Decrypt the data
-             byte[] decryptedData = result.getCryptoObject().getCipher().doFinal(encryptedData);
+          // Retrieve the original data from the saved call (this should be the plain text "Token")
+          String originalData = savedCall.getString(DATA);
+          Log.d("BiometricAuthNative", "Original Data: " + originalData);
 
-             // Convert decrypted data to a string (or appropriate type)
-             String decryptedDataString = new String(decryptedData, StandardCharsets.UTF_8);
+          // Use the authenticated cipher to encrypt the plain text data
+          Cipher cipher = result.getCryptoObject().getCipher();
+          byte[] encryptedData = cipher.doFinal(
+            originalData.getBytes(StandardCharsets.UTF_8)
+          );
 
-             // Prepare the result object to send back to the frontend
-             JSObject resultObject = new JSObject();
-             resultObject.put("decryptedData", decryptedDataString);
+          // Store the IV used during encryption
+          byte[] iv = cipher.getIV();
+          storeIV(iv, savedCall);
 
-             // Resolve the saved call with the decrypted data
-             savedCall.resolve(resultObject);
+          // Convert encrypted data to Base64 and log it
+          String encryptedDataString = Base64.encodeToString(
+            encryptedData,
+            Base64.DEFAULT
+          );
+          Log.d(
+            "BiometricAuthNative",
+            "Encrypted Data (Base64): " + encryptedDataString
+          );
 
-         } catch (Exception e) {
-             e.printStackTrace();
-             savedCall.reject("Decryption failed.");
-         } finally {
-             // Clean up the saved call
-             savedCall = null;
-         }
-     }
+          // Store the encrypted data
+          storeEncryptedData(encryptedData, savedCall);
 
-     @Override
-     public void onAuthenticationFailed() {
-         if (savedCall != null) {
-             savedCall.reject("Authentication failed.");
-             savedCall = null;
-         }
-     }
+          // Prepare the result object to send back to the frontend
+          JSObject resultObject = new JSObject();
+          resultObject.put("encryptedData", encryptedDataString);
 
-     @Override
-     public void onAuthenticationError(
-       int errorCode,
-       @NonNull CharSequence errString
-     ) {
-         if (savedCall != null) {
-             savedCall.reject("Authentication error: " + errString);
-             savedCall = null;
-         }
-     }
- };
+          // Resolve the saved call with the encrypted data
+          savedCall.resolve(resultObject);
+        } catch (Exception e) {
+          e.printStackTrace();
+          Log.e("BiometricAuthNative", "Encryption failed", e);
+          savedCall.reject("Encryption failed.");
+        } finally {
+          savedCall = null;
+        }
+      }
 
       @Override
       public void onAuthenticationFailed() {
-        // Handle failure case, e.g., logging or notifying the user
+        Log.d("BiometricAuthNative", "Authentication failed");
         if (savedCall != null) {
           savedCall.reject("Authentication failed.");
           savedCall = null;
@@ -435,7 +454,7 @@ public class BiometricAuthNative extends Plugin {
         int errorCode,
         @NonNull CharSequence errString
       ) {
-        // Handle error case, e.g., logging or notifying the user
+        Log.d("BiometricAuthNative", "Authentication error: " + errString);
         if (savedCall != null) {
           savedCall.reject("Authentication error: " + errString);
           savedCall = null;
@@ -477,16 +496,13 @@ public class BiometricAuthNative extends Plugin {
   private void storeEncryptedData(byte[] encryptedData, PluginCall call) {
     Log.d(
       "BiometricAuthNative",
-      "Storing encrypted data with key: " + call.getString(ENCRYPTED_DATA_KEY)
+      "Storing encrypted data with key: " + call.getString(DATA_KEY)
     );
     SharedPreferences sharedPreferences = getContext()
-      .getSharedPreferences(
-        call.getString(ENCRYPTED_DATA_KEY),
-        Context.MODE_PRIVATE
-      );
+      .getSharedPreferences(call.getString(DATA_KEY), Context.MODE_PRIVATE);
     SharedPreferences.Editor editor = sharedPreferences.edit();
     editor.putString(
-      call.getString(ENCRYPTED_DATA),
+      call.getString(DATA),
       Base64.encodeToString(encryptedData, Base64.DEFAULT)
     );
     editor.apply();
@@ -495,16 +511,12 @@ public class BiometricAuthNative extends Plugin {
   private byte[] getEncryptedData(PluginCall call) {
     Log.d(
       "BiometricAuthNative",
-      "Retrieving encrypted data with key: " +
-      call.getString(ENCRYPTED_DATA_KEY)
+      "Retrieving encrypted data with key: " + call.getString(DATA_KEY)
     );
     SharedPreferences sharedPreferences = getContext()
-      .getSharedPreferences(
-        call.getString(ENCRYPTED_DATA_KEY),
-        Context.MODE_PRIVATE
-      );
+      .getSharedPreferences(call.getString(DATA_KEY), Context.MODE_PRIVATE);
     String encryptedDataString = sharedPreferences.getString(
-      call.getString(ENCRYPTED_DATA),
+      call.getString(DATA),
       null
     );
     if (encryptedDataString != null) {
@@ -512,9 +524,33 @@ public class BiometricAuthNative extends Plugin {
     } else {
       Log.e(
         "BiometricAuthNative",
-        "No encrypted data found for key: " + call.getString(ENCRYPTED_DATA_KEY)
+        "No encrypted data found for key: " + call.getString(DATA_KEY)
       );
       throw new RuntimeException("No encrypted data found");
+    }
+  }
+
+  private void storeIV(byte[] iv, PluginCall call) {
+    String ivKey = call.getString(IV_KEY, "defaultIVKey");
+    Log.d("BiometricAuthNative", "Storing IV with key: " + ivKey);
+    SharedPreferences sharedPreferences = getContext()
+      .getSharedPreferences(ivKey, Context.MODE_PRIVATE);
+    SharedPreferences.Editor editor = sharedPreferences.edit();
+    editor.putString(ivKey, Base64.encodeToString(iv, Base64.DEFAULT));
+    editor.apply();
+  }
+
+  private byte[] getStoredIV(PluginCall call) {
+    String ivKey = call.getString(IV_KEY, "defaultIVKey");
+    Log.d("BiometricAuthNative", "Retrieving IV with key: " + ivKey);
+    SharedPreferences sharedPreferences = getContext()
+      .getSharedPreferences(ivKey, Context.MODE_PRIVATE);
+    String ivString = sharedPreferences.getString(ivKey, null);
+    if (ivString != null) {
+      return Base64.decode(ivString, Base64.DEFAULT);
+    } else {
+      Log.e("BiometricAuthNative", "No IV found for key: " + ivKey);
+      throw new RuntimeException("No IV found");
     }
   }
 }
